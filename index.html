@@ -232,6 +232,11 @@
   // Segundos de espera antes de dar por fallido un video que no arranca
   const LOAD_TIMEOUT = 10;
 
+  // Dominio del reproductor:
+  //  "https://www.youtube.com"           -> usa tu sesión (con Premium no hay anuncios)
+  //  "https://www.youtube-nocookie.com"  -> no usa cookies, no reconoce tu sesión
+  const EMBED_HOST = "https://www.youtube.com";
+
   // DEBUG = true muestra arriba a la izquierda un panel con lo que ocurre.
   // Ponlo en false cuando todo funcione.
   const DEBUG = true;
@@ -308,7 +313,7 @@
     f.allow = "autoplay; encrypted-media";
     f.referrerPolicy = "strict-origin-when-cross-origin";
 
-    let src = "https://www.youtube-nocookie.com/embed/" + id +
+    let src = EMBED_HOST + "/embed/" + id +
       "?enablejsapi=1&autoplay=1&controls=0&rel=0&playsinline=1" +
       "&disablekb=1&iv_load_policy=3&fs=0";
 
@@ -328,6 +333,7 @@
           ready = true;
           player.setVolume(VOLUME);
           dbg("reproductor listo");
+          videoBox.classList.add("playing");   // se ve desde ya, incluidos los anuncios
         },
 
         onStateChange: (e) => {
@@ -369,7 +375,7 @@
     const token = ++loadToken;
 
     setTimeout(() => {
-      if (token === loadToken && switching) {
+      if (token === loadToken && !ready) {
         dbg("el video no arrancó en " + LOAD_TIMEOUT + " s");
         showError("El video no cargó, se omitió.");
         next();
