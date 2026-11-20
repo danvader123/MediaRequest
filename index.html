@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Videos pedidos - reproductor</title>
+
+<style>
+  :root {
+    --w: 440px;
+    --vh: 390px;
+    --bar: 50px;
+    --zoom: 1;
+
+    --ink: #14202B;
+    --bar-bg: transparent;
+    --paper: #F2F5F7;
+    --accent: #db12e2;
+
+    /* apariencia del título */
+    --title-size: 19px;
+    --title-color: #ffffff;
+    --title-bg: transparent;
+    --title-padding: 8px 12px;
+  }
+
+  html, body {
+    margin: 0;
+    background: transparent;
+    overflow: hidden;
+    font-family: "Bahnschrift", "Segoe UI", Arial, sans-serif;
+    color: var(--paper);
+  }
+
+  #card {
+    width: var(--w);
+    margin: 8px;
+    background: transparent;
+    transform: translateX(-120%);
+    transition: transform .5s ease;
+  }
+
+  #card.show {
+    transform: none;
+  }
+
+  /* TÍTULO DEL VIDEO */
+  #videoTitle {
+    width: 100%;
+    box-sizing: border-box;
+    padding: var(--title-padding);
+    color: var(--title-color);
+    background: var(--title-bg);
+    font-size: var(--title-size);
+    font-weight: 700;
+    text-align: center;
+    text-shadow: 0 2px 5px rgba(0,0,0,.9);
+    overflow-wrap: anywhere;
+    opacity: 0;
+    transition: opacity .3s ease;
+  }
+
+  #videoTitle.visible {
+    opacity: 1;
+  }
+
+  /* ZONA DEL VIDEO */
+  #video {
+    position: relative;
+    width: var(--w);
+    height: var(--vh);
+    overflow: hidden;
+    background: transparent;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .25s ease;
+  }
+
+  #video.playing {
+    opacity: 1;
+  }
+
+  /* FORMATO SHORTS 9:16 */
+  #video.shorts #yt {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: calc(var(--vh) * 9 / 16);
+    height: var(--vh);
+    transform: translateX(-50%) scale(var(--zoom));
+    transform-origin: center;
+    border: 0;
+  }
+
+  /* FORMATO HORIZONTAL 16:9 */
+  #video.normal #yt {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: calc(var(--vh) * 16 / 9);
+    height: var(--vh);
+    transform: translate(-50%, -50%) scale(var(--zoom));
+    transform-origin: center;
+    border: 0;
+  }
+
+  /* MODO COMPLETO PARA VIDEOS HORIZONTALES */
+  #video.normal.fit #yt {
+    width: var(--w);
+    height: calc(var(--w) * 9 / 16);
+  }
+
+  /* BARRA INFERIOR */
+  #bar {
+    height: var(--bar);
+    box-sizing: border-box;
+    padding: 0 14px;
+    background: var(--bar-bg);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  #track {
+    flex: 1;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,.3);
+    box-shadow: 0 0 0 1px rgba(0,0,0,.35);
+    overflow: hidden;
+  }
+
+  #fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width .25s linear;
+  }
+
+  #by {
+    max-width: 55%;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 3px rgba(0,0,0,.85);
+  }
+
+  #by b {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  #status {
+    position: fixed;
+    right: 6px;
+    bottom: 4px;
+    font-size: 11px;
+    color: #93A4B3;
+    opacity: 0;
+  }
+
+  #status.error {
+    opacity: 1;
+    color: #FF8A80;
+  }
+
+  #status.ok {
+    opacity: 1;
+    color: var(--accent);
+  }
+</style>
+</head>
+
+<body>
+
+<div id="card">
+
+  <div id="videoTitle"></div>
+
+  <div id="video"></div>
+
+  <div id="bar">
+    <div id="track">
+      <div id="fill"></div>
+    </div>
+
+    <div id="by"></div>
+  </div>
+
+</div>
+
+<div id="status"></div>
+
+<script>
+
+  // ==========================================
+  // CONFIGURACIÓN
+  // ==========================================
+
+  const WS_URL = "ws://127.0.0.1:8080/";
+
+  const VOLUME = 60;
+  const MAX_SECONDS = 40;
+
+  // FORMAT:
+  // "shorts" = videos verticales 9:16
+  // "normal" = videos horizontales 16:9
+  const FORMAT = "shorts";
+
+  // TITLE_POSITION: "top" = título arriba, "bottom" = debajo del video
+  const TITLE_POSITION = "top";
+
+  // Para videos horizontales:
+  const FIT = true;
+
+  // Segundos de espera antes de dar por fallido un video que no arranca
+  const LOAD_TIMEOUT = 10;
+
+  // ==========================================
+  // ELEMENTOS
+  // ==========================================
+
+  const card = document.getElementById("card");
+  const videoBox = document.getElementById("video");
+  const titleEl = document.getElementById("videoTitle");
+
+  const fillEl = document.getElementById("fill");
+  const byEl = document.getElementById("by");
+  const statusEl = document.getElementById("status");
+
+  videoBox.classList.add(FORMAT);
+
+  if (FORMAT === "normal" && FIT) {
+    videoBox.classList.add("fit");
+  }
+
+  if (TITLE_POSITION === "bottom") {
+    videoBox.after(titleEl);
+  }
+
+  let apiReady = false;     // la API de YouTube ya cargó
+  let player = null;        // reproductor del video actual
+  let ready = false;        // el reproductor actual ya está listo
+  let current = null;
+  let switching = false;
+  let loadToken = 0;
+
+  const queue = [];
+
+  // ==========================================
+  // YOUTUBE IFRAME API
+  // ==========================================
+
+  const tag = document.createElement("script");
+  tag.src = "https://www.youtube.com/iframe_api";
+  document.head.appendChild(tag);
+
+  window.onYouTubeIframeAPIReady = () => {
+    apiReady = true;
+    if (!current && queue.length) next();
+  };
+
+  // Crea un iframe nuevo para cada video.
+  // Usa youtube-nocookie.com y envía el "referrer": así YouTube no da el
+  // error 153 cuando la página se abre como archivo local (file://).
+  function createPlayer(id) {
+
+    destroyPlayer();
+
+    const f = document.createElement("iframe");
+    f.id = "yt";
+    f.allow = "autoplay; encrypted-media";
+    f.referrerPolicy = "strict-origin-when-cross-origin";
+
+    let src = "https://www.youtube-nocookie.com/embed/" + id +
+      "?enablejsapi=1&autoplay=1&controls=0&rel=0&playsinline=1" +
+      "&disablekb=1&iv_load_policy=3&fs=0";
+
+    if (location.protocol.startsWith("http")) {
+      src += "&origin=" + encodeURIComponent(location.origin);
+    }
+
+    f.src = src;
+    videoBox.appendChild(f);
+
+    ready = false;
+
+    player = new YT.Player(f, {
+      events: {
+
+        onReady: () => {
+          ready = true;
+          player.setVolume(VOLUME);
+        },
+
+        onStateChange: (e) => {
+
+          if (e.data === YT.PlayerState.PLAYING) {
+            switching = false;
+            videoBox.classList.add("playing");
+            actualizarTitulo();
+          }
+
+          if (e.data === YT.PlayerState.ENDED) {
+            next();
+          }
+
+        },
+
+        onError: (e) => {
+          const motivos = {
+            2:   "enlace inválido",
+            5:   "error del reproductor",
+            100: "video eliminado o privado",
+            101: "el dueño no permite reproducirlo fuera de YouTube",
+            150: "el dueño no permite reproducirlo fuera de YouTube",
+            153: "falta el referrer de la página"
+          };
+          const c = e.data;
+          console.log("MR: error de YouTube", c, current);
+          showError("Video omitido (error " + c + "): " + (motivos[c] || "motivo desconocido"));
+          next();
+        }
+
+      }
+    });
+
+    // Si el video no arranca a tiempo, se omite para no quedar trabado
+    const token = ++loadToken;
+
+    setTimeout(() => {
+      if (token === loadToken && switching) {
+        showError("El video no cargó, se omitió.");
+        next();
+      }
+    }, LOAD_TIMEOUT * 1000);
+
+  }
+
+  function destroyPlayer() {
+
+    ready = false;
+
+    if (player && player.destroy) {
+      try { player.destroy(); } catch (e) {}
+    }
+
+    player = null;
+
+    const old = document.getElementById("yt");
+    if (old) old.remove();
+
+  }
+
+  // ==========================================
+  // TÍTULO AUTOMÁTICO
+  // ==========================================
+
+  function actualizarTitulo() {
+
+    if (!current || !player || !ready) return;
+
+    const videoData = player.getVideoData();
+
+    // Si Streamer.bot envió un título, tiene prioridad.
+    const title = current.title || (videoData && videoData.title) || "";
+
+    titleEl.textContent = title;
+
+    titleEl.classList.toggle("visible", !!title);
+
+  }
+
+  // ==========================================
+  // BARRA DE PROGRESO
+  // ==========================================
+
+  setInterval(() => {
+
+    if (!player || !ready || !current || switching) return;
+
+    if (player.getPlayerState() !== YT.PlayerState.PLAYING) {
+      return;
+    }
+
+    const t = player.getCurrentTime();
+    const d = player.getDuration();
+
+    const total = d > 0
+      ? Math.min(d, MAX_SECONDS)
+      : MAX_SECONDS;
+
+    fillEl.style.width =
+      Math.min(100, (t / total) * 100) + "%";
+
+    if (
+      t >= MAX_SECONDS ||
+      (d > 0 && t >= d - 0.25)
+    ) {
+      next();
+    }
+
+  }, 250);
+
+  // ==========================================
+  // SIGUIENTE VIDEO
+  // ==========================================
+
+  function next() {
+
+    current = queue.shift() || null;
+
+    switching = true;
+
+    fillEl.style.width = "0";
+
+    videoBox.classList.remove("playing");
+
+    titleEl.classList.remove("visible");
+
+    if (!current) {
+
+      loadToken++;           // cancela el aviso de "no cargó"
+      destroyPlayer();
+
+      card.classList.remove("show");
+
+      return;
+
+    }
+
+    byEl.innerHTML = "Video pedido por: <b></b>";
+
+    byEl.querySelector("b").textContent =
+      "@" + current.user;
+
+    card.classList.add("show");
+
+    createPlayer(current.id);
+
+  }
+
+  // ==========================================
+  // ERRORES
+  // ==========================================
+
+  function showError(msg) {
+
+    statusEl.textContent = msg;
+
+    statusEl.className = "error";
+
+    setTimeout(() => {
+      statusEl.className = "";
+    }, 9000);
+
+  }
+
+  // ==========================================
+  // STREAMER.BOT
+  // ==========================================
+
+  function connect() {
+
+    const ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+
+      ws.send(JSON.stringify({
+
+        request: "Subscribe",
+
+        id: "mr-subscribe",
+
+        events: {
+          General: ["Custom"]
+        }
+
+      }));
+
+      statusEl.textContent =
+        "Conectado a Streamer.bot";
+
+      statusEl.className = "ok";
+
+      setTimeout(() => {
+        statusEl.className = "";
+      }, 4000);
+
+    };
+
+    ws.onmessage = (e) => {
+
+      let d;
+
+      try {
+        d = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+
+      if (
+        !d.event ||
+        d.event.source !== "General" ||
+        d.event.type !== "Custom"
+      ) {
+        return;
+      }
+
+      let m = d.data;
+
+      if (typeof m === "string") {
+
+        try {
+          m = JSON.parse(m);
+        } catch {
+          return;
+        }
+
+      }
+
+      if (!m) return;
+
+      if (m.mr === "add" && m.id) {
+
+        queue.push({
+
+          id: m.id,
+
+          user: m.user || "alguien",
+
+          // Título opcional enviado desde Streamer.bot
+          title: m.title || ""
+
+        });
+
+        if (!current && apiReady) {
+          next();
+        }
+
+      }
+
+      else if (m.mr === "skip" && apiReady) {
+
+        next();
+
+      }
+
+    };
+
+    ws.onclose = () => {
+
+      setTimeout(connect, 3000);
+
+    };
+
+  }
+
+  connect();
+
+</script>
+
+</body>
+</html>
